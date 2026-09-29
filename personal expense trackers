@@ -1,0 +1,644 @@
+"""
+Personal Expense Tracker
+------------------------
+A console program to record and analyse your spending.
+
+Features:
+    1.  Add expense (with input validation)
+    2.  View all expenses (table format)
+    3.  View total spending
+    4.  Search by category
+    5.  Search by date range
+    6.  Monthly summary
+    7.  Category-wise summary
+    8.  Edit an expense
+    9.  Delete an expense
+    10. Sort expenses
+    11. Highest / lowest / average spending
+    12. Set monthly budget (with warning)
+    13. Export to CSV file
+    14. Clear all expenses
+    15. Exit (data is saved automatically in expenses.json)
+"""
+
+import csv
+import json
+import os
+from datetime import datetime
+
+# ---------------------------------------------------------------
+# GLOBAL VARIABLES
+# ---------------------------------------------------------------
+DATA_FILE = "expenses.json"      # file where data is stored
+CSV_FILE = "expenses_export.csv" # file used for CSV export
+DATE_FORMAT = "%d-%m-%Y"         # date format: DD-MM-YYYY
+
+expenses_list = []   # list of expenses, each expense is a dictionary
+monthly_budget = 0.0 # 0 means no budget has been set
+next_id = 1          # every expense gets a unique id number
+
+
+# ---------------------------------------------------------------
+# HELPER FUNCTIONS (input validation and printing)
+# ---------------------------------------------------------------
+def print_line(char="=", length=70):
+    """Print a line of the given character."""
+    print(char * length)
+
+
+def print_heading(title):
+    """Print a heading with lines above and below."""
+    print()
+    print_line()
+    print(title.center(70))
+    print_line()
+
+
+def pause():
+    """Wait for the user to press Enter."""
+    input("\nPress Enter to continue...")
+
+
+def get_non_empty(prompt):
+    """Keep asking until the user types something."""
+    while True:
+        value = input(prompt).strip()
+        if value != "":
+            return value
+        print("This field cannot be empty. Try again.")
+
+
+def get_valid_date(prompt, allow_blank=False):
+    """
+    Ask for a date in DD-MM-YYYY format.
+    If allow_blank is True, pressing Enter returns an empty string
+    (useful while editing, to keep the old value).
+    """
+    while True:
+        text = input(prompt).strip()
+
+        if text == "" and allow_blank:
+            return ""
+
+        # Shortcut: typing "today" gives today's date
+        if text.lower() == "today":
+            return datetime.now().strftime(DATE_FORMAT)
+
+        try:
+            date_obj = datetime.strptime(text, DATE_FORMAT)
+            return date_obj.strftime(DATE_FORMAT)
+        except ValueError:
+            print("Invalid date! Use DD-MM-YYYY (example: 05-03-2025) or type 'today'.")
+
+
+def get_valid_amount(prompt, allow_blank=False):
+    """Ask for a positive number. Keeps asking until valid."""
+    while True:
+        text = input(prompt).strip()
+
+        if text == "" and allow_blank:
+            return None
+
+        try:
+            amount = float(text)
+            if amount <= 0:
+                print("Amount must be greater than zero.")
+                continue
+            return amount
+        except ValueError:
+            print("Please enter a valid number (example: 250 or 99.50).")
+
+
+def get_valid_int(prompt, minimum, maximum):
+    """Ask for a whole number between minimum and maximum."""
+    while True:
+        text = input(prompt).strip()
+        try:
+            number = int(text)
+            if minimum <= number <= maximum:
+                return number
+            print(f"Enter a number between {minimum} and {maximum}.")
+        except ValueError:
+            print("Please enter a whole number.")
+
+
+def confirm(question):
+    """Ask a yes/no question. Returns True for yes."""
+    while True:
+        answer = input(question + " (y/n): ").strip().lower()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("Please type y or n.")
+
+
+def to_date_object(date_string):
+    """Convert a DD-MM-YYYY string into a datetime object."""
+    return datetime.strptime(date_string, DATE_FORMAT)
+
+
+# ---------------------------------------------------------------
+# FILE HANDLING (save and load)
+# ---------------------------------------------------------------
+def save_data():
+    """Save expenses and budget into a JSON file."""
+    data = {
+        "next_id": next_id,
+        "monthly_budget": monthly_budget,
+        "expenses": expenses_list,
+    }
+    try:
+        with open(DATA_FILE, "w") as file:
+            json.dump(data, file, indent=4)
+    except OSError as error:
+        print("Could not save data:", error)
+
+
+def load_data():
+    """Load expenses and budget from the JSON file (if it exists)."""
+    global expenses_list, monthly_budget, next_id
+
+    if not os.path.exists(DATA_FILE):
+        return  # first time running the program
+
+    try:
+        with open(DATA_FILE, "r") as file:
+            data = json.load(file)
+        expenses_list = data.get("expenses", [])
+        monthly_budget = data.get("monthly_budget", 0.0)
+        next_id = data.get("next_id", len(expenses_list) + 1)
+        print(f"Loaded {len(expenses_list)} saved expense(s).")
+    except (OSError, json.JSONDecodeError):
+        print("Saved file was unreadable. Starting with an empty list.")
+
+
+# ---------------------------------------------------------------
+# DISPLAY FUNCTIONS
+# ---------------------------------------------------------------
+def show_table(expense_group):
+    """Print a list of expenses as a neat table."""
+    if len(expense_group) == 0:
+        print("No expenses to show.")
+        return
+
+    print(f"{'ID':<5}{'Date':<13}{'Category':<15}{'Description':<25}{'Amount':>10}")
+    print_line("-")
+    for item in expense_group:
+        print(
+            f"{item['id']:<5}"
+            f"{item['date']:<13}"
+            f"{item['category'][:14]:<15}"
+            f"{item['description'][:24]:<25}"
+            f"{item['amount']:>10.2f}"
+        )
+    print_line("-")
+    total = sum(item["amount"] for item in expense_group)
+    print(f"{'TOTAL':<58}{total:>10.2f}")
+
+
+def find_expense_by_id(expense_id):
+    """Return the expense dictionary with this id, or None."""
+    for item in expenses_list:
+        if item["id"] == expense_id:
+            return item
+    return None
+
+
+# ---------------------------------------------------------------
+# FEATURE 1: ADD EXPENSE
+# ---------------------------------------------------------------
+def add_expense():
+    global next_id
+
+    print_heading("ADD NEW EXPENSE")
+    date = get_valid_date("Enter the date (DD-MM-YYYY or 'today'): ")
+    category = get_non_empty("Enter the category (food, makeup, travel etc): ").lower()
+    description = get_non_empty("Add details: ")
+    amount = get_valid_amount("How much did you spend?: ")
+
+    expense = {
+        "id": next_id,
+        "date": date,
+        "category": category,
+        "description": description,
+        "amount": amount,
+    }
+    expenses_list.append(expense)
+    next_id += 1
+    save_data()
+
+    print("\nExpense added successfully!")
+    check_budget_warning(date)
+
+
+# ---------------------------------------------------------------
+# FEATURE 2: VIEW ALL EXPENSES
+# ---------------------------------------------------------------
+def view_all_expenses():
+    print_heading("ALL EXPENSES")
+    show_table(expenses_list)
+
+
+# ---------------------------------------------------------------
+# FEATURE 3: VIEW TOTAL SPENDING
+# ---------------------------------------------------------------
+def view_total_spending():
+    print_heading("TOTAL SPENDING")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    total = 0
+    for item in expenses_list:
+        total = total + item["amount"]
+
+    print(f"Number of expenses : {len(expenses_list)}")
+    print(f"TOTAL SPENDING     : {total:.2f}")
+
+
+# ---------------------------------------------------------------
+# FEATURE 4: SEARCH BY CATEGORY
+# ---------------------------------------------------------------
+def search_by_category():
+    print_heading("SEARCH BY CATEGORY")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    name = get_non_empty("Enter category to search: ").lower()
+    results = [item for item in expenses_list if item["category"] == name]
+
+    if len(results) == 0:
+        print(f"No expenses found in category '{name}'.")
+    else:
+        show_table(results)
+
+
+# ---------------------------------------------------------------
+# FEATURE 5: SEARCH BY DATE RANGE
+# ---------------------------------------------------------------
+def search_by_date_range():
+    print_heading("SEARCH BY DATE RANGE")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    start_text = get_valid_date("Start date (DD-MM-YYYY): ")
+    end_text = get_valid_date("End date   (DD-MM-YYYY): ")
+    start = to_date_object(start_text)
+    end = to_date_object(end_text)
+
+    if start > end:
+        print("Start date is after end date. Swapping them for you.")
+        start, end = end, start
+
+    results = []
+    for item in expenses_list:
+        item_date = to_date_object(item["date"])
+        if start <= item_date <= end:
+            results.append(item)
+
+    if len(results) == 0:
+        print("No expenses found in that date range.")
+    else:
+        show_table(results)
+
+
+# ---------------------------------------------------------------
+# FEATURE 6: MONTHLY SUMMARY
+# ---------------------------------------------------------------
+def monthly_summary():
+    print_heading("MONTHLY SUMMARY")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    # Build a dictionary like {"03-2025": 1500.0, "04-2025": 900.0}
+    month_totals = {}
+    for item in expenses_list:
+        month_key = item["date"][3:]  # takes "MM-YYYY" part of DD-MM-YYYY
+        month_totals[month_key] = month_totals.get(month_key, 0) + item["amount"]
+
+    # Sort months in correct calendar order
+    sorted_months = sorted(month_totals, key=lambda m: datetime.strptime(m, "%m-%Y"))
+
+    print(f"{'Month':<12}{'Spent':>12}", end="")
+    if monthly_budget > 0:
+        print(f"{'Budget left':>15}")
+    else:
+        print()
+    print_line("-", 40)
+
+    for month in sorted_months:
+        line = f"{month:<12}{month_totals[month]:>12.2f}"
+        if monthly_budget > 0:
+            left = monthly_budget - month_totals[month]
+            line += f"{left:>15.2f}"
+        print(line)
+
+
+# ---------------------------------------------------------------
+# FEATURE 7: CATEGORY-WISE SUMMARY
+# ---------------------------------------------------------------
+def category_summary():
+    print_heading("CATEGORY-WISE SUMMARY")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    category_totals = {}
+    for item in expenses_list:
+        cat = item["category"]
+        category_totals[cat] = category_totals.get(cat, 0) + item["amount"]
+
+    grand_total = sum(category_totals.values())
+
+    # Sort so the biggest spending category comes first
+    sorted_categories = sorted(category_totals.items(), key=lambda pair: pair[1], reverse=True)
+
+    print(f"{'Category':<18}{'Spent':>12}{'Share':>10}")
+    print_line("-", 40)
+    for cat, total in sorted_categories:
+        percent = (total / grand_total) * 100
+        bar = "#" * int(percent // 5)  # small text bar chart
+        print(f"{cat:<18}{total:>12.2f}{percent:>9.1f}%  {bar}")
+    print_line("-", 40)
+    print(f"{'TOTAL':<18}{grand_total:>12.2f}")
+
+
+# ---------------------------------------------------------------
+# FEATURE 8: EDIT EXPENSE
+# ---------------------------------------------------------------
+def edit_expense():
+    print_heading("EDIT EXPENSE")
+    if len(expenses_list) == 0:
+        print("No expenses to edit.")
+        return
+
+    show_table(expenses_list)
+    expense_id = get_valid_int("\nEnter the ID of the expense to edit: ", 1, 10**9)
+    item = find_expense_by_id(expense_id)
+
+    if item is None:
+        print("No expense found with that ID.")
+        return
+
+    print("\nPress Enter to keep the old value.")
+
+    new_date = get_valid_date(f"Date [{item['date']}]: ", allow_blank=True)
+    new_category = input(f"Category [{item['category']}]: ").strip().lower()
+    new_description = input(f"Description [{item['description']}]: ").strip()
+    new_amount = get_valid_amount(f"Amount [{item['amount']}]: ", allow_blank=True)
+
+    if new_date != "":
+        item["date"] = new_date
+    if new_category != "":
+        item["category"] = new_category
+    if new_description != "":
+        item["description"] = new_description
+    if new_amount is not None:
+        item["amount"] = new_amount
+
+    save_data()
+    print("\nExpense updated successfully!")
+
+
+# ---------------------------------------------------------------
+# FEATURE 9: DELETE EXPENSE
+# ---------------------------------------------------------------
+def delete_expense():
+    print_heading("DELETE EXPENSE")
+    if len(expenses_list) == 0:
+        print("No expenses to delete.")
+        return
+
+    show_table(expenses_list)
+    expense_id = get_valid_int("\nEnter the ID of the expense to delete: ", 1, 10**9)
+    item = find_expense_by_id(expense_id)
+
+    if item is None:
+        print("No expense found with that ID.")
+        return
+
+    if confirm(f"Delete '{item['description']}' ({item['amount']:.2f})?"):
+        expenses_list.remove(item)
+        save_data()
+        print("Expense deleted.")
+    else:
+        print("Deletion cancelled.")
+
+
+# ---------------------------------------------------------------
+# FEATURE 10: SORT EXPENSES
+# ---------------------------------------------------------------
+def sort_expenses():
+    print_heading("SORT EXPENSES")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    print("1. By date (oldest first)")
+    print("2. By date (newest first)")
+    print("3. By amount (lowest first)")
+    print("4. By amount (highest first)")
+    print("5. By category (A to Z)")
+    choice = get_valid_int("Choose sorting option: ", 1, 5)
+
+    if choice == 1:
+        result = sorted(expenses_list, key=lambda e: to_date_object(e["date"]))
+    elif choice == 2:
+        result = sorted(expenses_list, key=lambda e: to_date_object(e["date"]), reverse=True)
+    elif choice == 3:
+        result = sorted(expenses_list, key=lambda e: e["amount"])
+    elif choice == 4:
+        result = sorted(expenses_list, key=lambda e: e["amount"], reverse=True)
+    else:
+        result = sorted(expenses_list, key=lambda e: e["category"])
+
+    print()
+    show_table(result)
+
+
+# ---------------------------------------------------------------
+# FEATURE 11: STATISTICS (highest, lowest, average)
+# ---------------------------------------------------------------
+def show_statistics():
+    print_heading("SPENDING STATISTICS")
+    if len(expenses_list) == 0:
+        print("No expenses added yet.")
+        return
+
+    highest = max(expenses_list, key=lambda e: e["amount"])
+    lowest = min(expenses_list, key=lambda e: e["amount"])
+    total = sum(e["amount"] for e in expenses_list)
+    average = total / len(expenses_list)
+
+    print(f"Total expenses recorded : {len(expenses_list)}")
+    print(f"Total money spent       : {total:.2f}")
+    print(f"Average per expense     : {average:.2f}")
+    print()
+    print(f"Highest expense : {highest['amount']:.2f} "
+          f"({highest['description']}, {highest['category']}, {highest['date']})")
+    print(f"Lowest expense  : {lowest['amount']:.2f} "
+          f"({lowest['description']}, {lowest['category']}, {lowest['date']})")
+
+    # Which day had the most spending?
+    day_totals = {}
+    for e in expenses_list:
+        day_totals[e["date"]] = day_totals.get(e["date"], 0) + e["amount"]
+    costly_day = max(day_totals, key=day_totals.get)
+    print(f"Most expensive day : {costly_day} ({day_totals[costly_day]:.2f})")
+
+
+# ---------------------------------------------------------------
+# FEATURE 12: MONTHLY BUDGET
+# ---------------------------------------------------------------
+def set_budget():
+    global monthly_budget
+
+    print_heading("MONTHLY BUDGET")
+    if monthly_budget > 0:
+        print(f"Current monthly budget: {monthly_budget:.2f}")
+    else:
+        print("No budget set yet.")
+
+    new_budget = get_valid_amount("Enter new monthly budget (Enter to cancel): ", allow_blank=True)
+    if new_budget is None:
+        print("Budget not changed.")
+        return
+
+    monthly_budget = new_budget
+    save_data()
+    print(f"Monthly budget set to {monthly_budget:.2f}")
+
+
+def check_budget_warning(date_text):
+    """After adding an expense, warn if that month crossed the budget."""
+    if monthly_budget <= 0:
+        return
+
+    month_key = date_text[3:]
+    month_total = 0
+    for item in expenses_list:
+        if item["date"][3:] == month_key:
+            month_total += item["amount"]
+
+    if month_total > monthly_budget:
+        over = month_total - monthly_budget
+        print(f"WARNING: You are over your budget for {month_key} by {over:.2f}!")
+    elif month_total >= 0.8 * monthly_budget:
+        left = monthly_budget - month_total
+        print(f"Careful: you have used 80% or more of your budget for {month_key}. Left: {left:.2f}")
+
+
+# ---------------------------------------------------------------
+# FEATURE 13: EXPORT TO CSV
+# ---------------------------------------------------------------
+def export_to_csv():
+    print_heading("EXPORT TO CSV")
+    if len(expenses_list) == 0:
+        print("Nothing to export.")
+        return
+
+    try:
+        with open(CSV_FILE, "w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["ID", "Date", "Category", "Description", "Amount"])
+            for item in expenses_list:
+                writer.writerow([
+                    item["id"],
+                    item["date"],
+                    item["category"],
+                    item["description"],
+                    item["amount"],
+                ])
+        print(f"Exported {len(expenses_list)} expense(s) to {CSV_FILE}")
+    except OSError as error:
+        print("Could not write the file:", error)
+
+
+# ---------------------------------------------------------------
+# FEATURE 14: CLEAR ALL EXPENSES
+# ---------------------------------------------------------------
+def clear_all():
+    print_heading("CLEAR ALL EXPENSES")
+    if len(expenses_list) == 0:
+        print("Already empty.")
+        return
+
+    print(f"This will permanently delete {len(expenses_list)} expense(s).")
+    if confirm("Are you sure?"):
+        expenses_list.clear()
+        save_data()
+        print("All expenses cleared.")
+    else:
+        print("Cancelled. Nothing was deleted.")
+
+
+# ---------------------------------------------------------------
+# MENU
+# ---------------------------------------------------------------
+def show_menu():
+    print()
+    print_line()
+    print("PERSONAL EXPENSE TRACKER".center(70))
+    print_line()
+    print(" 1. Add expense")
+    print(" 2. View all expenses")
+    print(" 3. View total spending")
+    print(" 4. Search by category")
+    print(" 5. Search by date range")
+    print(" 6. Monthly summary")
+    print(" 7. Category-wise summary")
+    print(" 8. Edit an expense")
+    print(" 9. Delete an expense")
+    print("10. Sort expenses")
+    print("11. Statistics (highest / lowest / average)")
+    print("12. Set monthly budget")
+    print("13. Export to CSV")
+    print("14. Clear all expenses")
+    print("15. Exit")
+    print_line("-")
+
+
+def main():
+    print("Welcome to Personal Expense Tracker")
+    load_data()
+
+    # Dictionary that connects each menu choice to its function
+    actions = {
+        "1": add_expense,
+        "2": view_all_expenses,
+        "3": view_total_spending,
+        "4": search_by_category,
+        "5": search_by_date_range,
+        "6": monthly_summary,
+        "7": category_summary,
+        "8": edit_expense,
+        "9": delete_expense,
+        "10": sort_expenses,
+        "11": show_statistics,
+        "12": set_budget,
+        "13": export_to_csv,
+        "14": clear_all,
+    }
+
+    while True:
+        show_menu()
+        choice = input("Please enter your choice: ").strip()
+
+        if choice == "15":
+            save_data()
+            print("Data saved. THANK YOU, goodbye!")
+            break
+        elif choice in actions:
+            actions[choice]()
+            pause()
+        else:
+            print("INVALID CHOICE, TRY AGAIN")
+
+
+# This makes sure main() runs only when the file is run directly
+if __name__ == "__main__":
+    main()
